@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spring Boot Stopwatch</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f2f5;
+            margin: 0;
+            color: #333;
+        }
+        .stopwatch-container {
+            background-color: #ffffff;
+            padding: 30px 40px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 350px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 25px;
+        }
+        .time-display {
+            font-size: 3.5em;
+            font-weight: 300;
+            margin-bottom: 30px;
+            padding: 10px;
+            background-color: #ecf0f1;
+            border-radius: 5px;
+            color: #2c3e50;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .buttons button {
+            font-size: 1em;
+            padding: 12px 20px;
+            margin: 8px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            color: white;
+            min-width: 80px;
+        }
+        .buttons button:active {
+            transform: scale(0.98);
+        }
+        #startButton { background-color: #2ecc71; }
+        #startButton:hover { background-color: #27ae60; }
+        #stopButton { background-color: #e74c3c; }
+        #stopButton:hover { background-color: #c0392b; }
+        #lapButton { background-color: #3498db; }
+        #lapButton:hover { background-color: #2980b9; }
+        #resetButton { background-color: #f39c12; }
+        #resetButton:hover { background-color: #e67e22; }
+
+        .buttons button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        .laps-container {
+            margin-top: 30px;
+            max-height: 150px;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        .laps-container h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #555;
+            font-size: 1.1em;
+        }
+        #lapsList {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+            text-align: left;
+        }
+        #lapsList li {
+            padding: 6px 0;
+            border-bottom: 1px dashed #eee;
+            font-size: 0.95em;
+            color: #444;
+        }
+        #lapsList li:last-child {
+            border-bottom: none;
+        }
+        #lapsList li .lap-number {
+            font-weight: bold;
+            margin-right: 10px;
+            color: #3498db;
+        }
+        .status-message {
+            margin-top: 15px;
+            color: #7f8c8d;
+            font-style: italic;
+            min-height: 1.2em; /* Reserve space */
+        }
+    </style>
+</head>
+<body>
+    <div class="stopwatch-container">
+        <h1>Stopwatch</h1>
+        <div id="timeDisplay" class="time-display">00:00:00.000</div>
+        <div class="buttons">
+            <button id="startButton">Start</button>
+            <button id="stopButton" disabled>Stop</button>
+            <button id="lapButton" disabled>Lap</button>
+            <button id="resetButton">Reset</button>
+        </div>
+        <div id="statusMessage" class="status-message"></div>
+        <div class="laps-container">
+            <h3>Laps</h3>
+            <ul id="lapsList">
+                <!-- Lap times will be added here -->
+            </ul>
+        </div>
+    </div>
+
+        <script>
+        const API_BASE_URL = 'http://localhost:8081/api/stopwatch';
+
+        const timeDisplay = document.getElementById('timeDisplay');
+        const lapsList = document.getElementById('lapsList');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const lapButton = document.getElementById('lapButton');
+        const resetButton = document.getElementById('resetButton');
+        const statusMessage = document.getElementById('statusMessage');
+
+        let statusInterval = null;
+
+        // --- API Call Functions ---
+        async function callApi(endpoint, method = 'GET') {
+            try {
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, { method });
+                if (!response.ok) {
+                    // Try to parse error JSON, fallback to statusText
+                    let errorBody;
+                    try {
+                        errorBody = await response.json();
+                    } catch (e) {
+                        // If response is not JSON or empty
+                        errorBody = { message: response.statusText || 'Unknown server error' };
+                    }
+                    console.error(`HTTP error! Status: ${response.status}`, errorBody);
+                    throw new Error(`Server error: ${errorBody.message || response.statusText}`);
+                }
+                return await response.json();
+            } catch (error) {
+                console.error(`Error calling ${method} ${endpoint}:`, error);
+                statusMessage.textContent = error.message || 'Failed to communicate with server.';
+                // Don't stop polling here generally, but ensure UI reflects an error if needed
+                // If a critical call fails (like start/stop), we might need specific UI updates
+                return null;
+            }
+        }
+
+        // --- UI Update Functions ---
+        function updateUI(data) {
+            if (!data) { // If API call failed or returned no data
+                console.warn("updateUI called with no data. Current state might be stale.");
+                // Optionally, you could try to fetch status again here or show a persistent error
+                // For now, we'll just not update if data is null.
+                return;
+            }
+
+            timeDisplay.textContent = data.elapsedTime || '00:00:00.000';
+            // Update status message only if provided in the response, otherwise keep the last one
+            // or clear it if the action was successful.
+            if (data.message) {
+                statusMessage.textContent = data.message;
+            } else if (data.running !== undefined) { // If it's a status update without a specific action message
+                statusMessage.textContent = data.running ? 'Running...' : 'Stopped.';
+            }
+
+
+            lapsList.innerHTML = '';
+            if (data.laps && data.laps.length > 0) {
+                data.laps.forEach((lapTime, index) => {
+                    const li = document.createElement('li');
+                    const lapNumberSpan = document.createElement('span');
+                    lapNumberSpan.className = 'lap-number';
+                    lapNumberSpan.textContent = `Lap ${index + 1}:`;
+                    li.appendChild(lapNumberSpan);
+                    li.appendChild(document.createTextNode(lapTime));
+                    lapsList.appendChild(li);
+                });
+            } else {
+                 const li = document.createElement('li');
+                 li.textContent = 'No laps recorded.';
+                 li.style.fontStyle = 'italic';
+                 li.style.color = '#999';
+                 lapsList.appendChild(li);
+            }
+
+            // Update button states based on the `running` status from the API
+            if (data.running) {
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                lapButton.disabled = false;
+                resetButton.disabled = true; // **CORRECTION**: Disable reset while running for clarity
+                startPollingStatus();
+            } else { // Not running (stopped or reset)
+                startButton.disabled = false;
+                stopButton.disabled = true;
+                lapButton.disabled = true;
+                resetButton.disabled = false; // **CORRECTION**: Enable reset when not running
+                stopPollingStatus();
+                // If it just stopped, the timeDisplay already has the final time from the /stop response.
+                // If it was reset, timeDisplay also has "00:00:00.000".
+            }
+        }
+
+        // --- Polling for status when running ---
+        function startPollingStatus() {
+            if (statusInterval) clearInterval(statusInterval);
+            statusInterval = setInterval(async () => {
+                // Only fetch status if we believe it *should* be running.
+                // The button states are the primary source of truth for *initiating* polling.
+                // The API response from /status will confirm the actual running state.
+                const currentStatusData = await callApi('/status');
+                if (currentStatusData) {
+                    // Update only the time display during polling to avoid re-rendering everything
+                    // unless the running state has changed.
+                    timeDisplay.textContent = currentStatusData.elapsedTime;
+                    if (!currentStatusData.running) {
+                        // If the stopwatch stopped unexpectedly (e.g., server restart or other logic)
+                        // then update the full UI and stop polling.
+                        updateUI(currentStatusData);
+                    }
+                } else {
+                    // If status call fails during polling, stop polling to prevent spamming errors
+                    stopPollingStatus();
+                    statusMessage.textContent = "Lost connection to server. Refresh to try again.";
+                    // Disable buttons that require a running state or connection
+                    stopButton.disabled = true;
+                    lapButton.disabled = true;
+                }
+            }, 100); // Poll frequently for smooth display
+        }
+
+        function stopPollingStatus() {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
+            }
+        }
+
+        // --- Event Listeners ---
+        // We await the callApi and then explicitly call updateUI with the response.
+        // This ensures the UI is updated based on the *actual result* of the action.
+        startButton.addEventListener('click', async () => {
+            statusMessage.textContent = "Starting..."; // Immediate feedback
+            const data = await callApi('/start', 'POST');
+            if (data) updateUI(data); // updateUI will handle polling based on data.running
+            else statusMessage.textContent = "Failed to start."; // If data is null
+        });
+
+        stopButton.addEventListener('click', async () => {
+            statusMessage.textContent = "Stopping...";
+            const data = await callApi('/stop', 'POST');
+            if (data) updateUI(data); // updateUI will stop polling
+            else statusMessage.textContent = "Failed to stop.";
+        });
+
+        lapButton.addEventListener('click', async () => {
+            statusMessage.textContent = "Recording lap...";
+            const data = await callApi('/lap', 'POST');
+            // For lap, the main time display and laps list need updating.
+            // The running state doesn't change, so polling continues.
+            if (data) {
+                updateUI(data); // Update everything including laps from the response
+            } else {
+                statusMessage.textContent = "Failed to record lap.";
+            }
+        });
+
+        resetButton.addEventListener('click', async () => {
+            statusMessage.textContent = "Resetting...";
+            const data = await callApi('/reset', 'POST');
+            if (data) updateUI(data); // updateUI will stop polling and reset display
+            else statusMessage.textContent = "Failed to reset.";
+        });
+
+        // --- Initial Load ---
+        async function initialLoad() {
+            statusMessage.textContent = "Loading status...";
+            const data = await callApi('/status');
+            if (data) {
+                updateUI(data);
+            } else {
+                statusMessage.textContent = "Could not fetch initial status. Server might be down.";
+                // Disable all buttons if initial load fails
+                startButton.disabled = true;
+                stopButton.disabled = true;
+                lapButton.disabled = true;
+                resetButton.disabled = true;
+            }
+        }
+
+        window.onload = initialLoad;
+    </script>
+</body>
+</html>
